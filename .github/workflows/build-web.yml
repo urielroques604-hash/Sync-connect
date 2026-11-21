@@ -18,8 +18,8 @@ jobs:
       - run: flutter pub get
       - run: >-
           flutter build web --release
-          --dart-define=BOT_API_URL=https://app.syncconnect.online
-          --dart-define=PUBLIC_WEB_URL=https://app.syncconnect.online
+          --dart-define=BOT_API_URL=https://syncconnect.online
+          --dart-define=PUBLIC_WEB_URL=https://syncconnect.online
       - uses: actions/upload-artifact@v4
         with:
           name: sync-connect-web

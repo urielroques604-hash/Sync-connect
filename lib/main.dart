@@ -1096,6 +1096,12 @@ class _BusinessShellState extends State<BusinessShell> {
           orElse: () => result,
         );
         await _showReceiptOptions(sale);
+      } else {
+        final purchaseRecord = _store.purchases.firstWhere(
+          (item) => item['id']?.toString() == result['id']?.toString(),
+          orElse: () => result,
+        );
+        await _showPurchaseReceiptOptions(purchaseRecord);
       }
       if (mounted) {
         if (!purchase &&
@@ -1528,6 +1534,125 @@ class _BusinessShellState extends State<BusinessShell> {
     phone.dispose();
   }
 
+  Future<void> _showPurchaseReceiptOptions(
+      Map<String, dynamic> purchase) async {
+    if (!mounted) return;
+    final receipt = _store.receiptConfig;
+    final catalog = _store.catalogConfig;
+    final businessName =
+        (receipt['businessName']?.toString().trim().isNotEmpty == true
+                    ? receipt['businessName']
+                    : catalog['name'])
+                ?.toString() ??
+            'Mi negocio';
+    final logo = (receipt['logo']?.toString().isNotEmpty == true
+                ? receipt['logo']
+                : catalog['logo'])
+            ?.toString() ??
+        '';
+    final receiptKey = GlobalKey();
+    var busy = false;
+    var errorText = '';
+
+    Future<Uint8List> captureReceipt() async {
+      await WidgetsBinding.instance.endOfFrame;
+      final renderObject = receiptKey.currentContext?.findRenderObject();
+      if (renderObject is! RenderRepaintBoundary) {
+        throw Exception('No se pudo preparar el comprobante de compra.');
+      }
+      final image = await renderObject.toImage(pixelRatio: 2);
+      try {
+        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+        if (data == null) {
+          throw Exception('No se pudo crear la imagen del comprobante.');
+        }
+        return data.buffer.asUint8List();
+      } finally {
+        image.dispose();
+      }
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('Comprobante de compra'),
+          content: SizedBox(
+            width: 430,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  RepaintBoundary(
+                    key: receiptKey,
+                    child: _PurchaseReceiptCard(
+                      purchase: purchase,
+                      businessName: businessName,
+                      logo: logo,
+                      taxId: receipt['taxId']?.toString() ?? '',
+                      address: receipt['address']?.toString() ?? '',
+                      phone: receipt['phone']?.toString() ?? '',
+                      email: receipt['email']?.toString() ?? '',
+                    ),
+                  ),
+                  if (errorText.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Text(errorText, style: const TextStyle(color: Colors.red)),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: busy ? null : () => Navigator.pop(dialogContext),
+              child: const Text('Cerrar'),
+            ),
+            FilledButton.icon(
+              onPressed: busy
+                  ? null
+                  : () async {
+                      setDialogState(() {
+                        busy = true;
+                        errorText = '';
+                      });
+                      try {
+                        final bytes = await captureReceipt();
+                        final document = pw.Document();
+                        document.addPage(pw.Page(
+                          pageFormat: PdfPageFormat.roll80,
+                          margin: const pw.EdgeInsets.all(8),
+                          build: (_) => pw.Center(
+                            child: pw.Image(pw.MemoryImage(bytes),
+                                fit: pw.BoxFit.contain),
+                          ),
+                        ));
+                        await Printing.layoutPdf(
+                          name:
+                              'Comprobante-compra-${purchase['number'] ?? purchase['id']}.pdf',
+                          onLayout: (_) async => document.save(),
+                        );
+                        if (dialogContext.mounted) {
+                          Navigator.pop(dialogContext);
+                        }
+                      } catch (error) {
+                        setDialogState(() => errorText =
+                            '$error'.replaceFirst('Exception: ', ''));
+                      } finally {
+                        if (dialogContext.mounted) {
+                          setDialogState(() => busy = false);
+                        }
+                      }
+                    },
+              icon: Icon(busy ? Icons.hourglass_top : Icons.print_outlined),
+              label: Text(busy ? 'Preparando…' : 'Imprimir'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _expenseDialog() async {
     final result = await showDialog<Map<String, dynamic>>(
         context: context, builder: (_) => const _ExpenseDialog());
@@ -1896,11 +2021,15 @@ class _RecordsPage extends StatelessWidget {
                       _number(r['balance']) <= 0
                   ? null
                   : () => _poketPaymentDialog(context, store!, r),
-              onReceipt: title != 'Ventas'
-                  ? null
-                  : () => context
+              onReceipt: title == 'Ventas'
+                  ? () => context
                       .findAncestorStateOfType<_BusinessShellState>()
-                      ?._showReceiptOptions(r),
+                      ?._showReceiptOptions(r)
+                  : title == 'Compras'
+                      ? () => context
+                          .findAncestorStateOfType<_BusinessShellState>()
+                          ?._showPurchaseReceiptOptions(r)
+                      : null,
               onReturn: title != 'Ventas' || store == null || !_canReturn(r)
                   ? null
                   : () => _returnDialog(context, store!, r),
@@ -4415,7 +4544,7 @@ class _ConnectionsPageState extends State<_ConnectionsPage> {
                                             fontWeight: FontWeight.w800)),
                                     const SizedBox(height: 6),
                                     const Text(
-                                        'El logo se toma del diseño de tu catálogo. Estos datos aparecen en el comprobante de cada venta.'),
+                                        'El logo se toma del diseño de tu catálogo. Estos datos aparecen en los comprobantes de ventas y compras.'),
                                     const SizedBox(height: 12),
                                     _input(
                                         _taxId, 'RUC / identificación fiscal'),
@@ -7114,6 +7243,207 @@ class _ReceiptCard extends StatelessWidget {
                       fontSize: 12,
                       fontWeight:
                           strong ? FontWeight.w800 : FontWeight.normal))),
+        ]),
+      );
+}
+
+class _PurchaseReceiptCard extends StatelessWidget {
+  const _PurchaseReceiptCard({
+    required this.purchase,
+    required this.businessName,
+    required this.logo,
+    required this.taxId,
+    required this.address,
+    required this.phone,
+    required this.email,
+  });
+
+  final Map<String, dynamic> purchase;
+  final String businessName, logo, taxId, address, phone, email;
+
+  String _amount(double value) => NumberFormat.currency(
+        locale: _currencyLocales[purchase['currency']?.toString()] ?? 'es_NI',
+        symbol: _currencySymbols[purchase['currency']?.toString()] ?? 'C\$',
+        decimalDigits: 2,
+      ).format(value);
+
+  @override
+  Widget build(BuildContext context) {
+    final items = purchase['items'] is List
+        ? (purchase['items'] as List).whereType<Map>().toList()
+        : const <Map>[];
+    final total = _number(purchase['total']);
+    final subtotal =
+        purchase['subtotal'] == null ? total : _number(purchase['subtotal']);
+    final logoBytes = logo.startsWith('data:image/') && logo.contains(',')
+        ? base64Decode(logo.split(',').last)
+        : null;
+
+    return Material(
+      color: Colors.white,
+      child: Container(
+        width: 350,
+        padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: const Color(0xffe3e9f0)),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (logoBytes != null)
+              Center(
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 9),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.memory(logoBytes,
+                        width: 58, height: 58, fit: BoxFit.cover),
+                  ),
+                ),
+              ),
+            Text(
+              businessName.toUpperCase(),
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: .5,
+                  color: _brand),
+            ),
+            if (taxId.isNotEmpty) _centered('RUC: $taxId'),
+            if (address.isNotEmpty) _centered(address),
+            if (phone.isNotEmpty) _centered(phone),
+            if (email.isNotEmpty) _centered(email),
+            const SizedBox(height: 10),
+            _separator(),
+            const SizedBox(height: 8),
+            const Text('COMPROBANTE DE COMPRA',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontWeight: FontWeight.w900, fontSize: 14)),
+            const SizedBox(height: 3),
+            const Text('REGISTRO DE MERCANCÍA',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 10,
+                    letterSpacing: 1.1,
+                    color: Colors.black54,
+                    fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            _row(
+                'N.º',
+                purchase['number']?.toString() ??
+                    purchase['id']?.toString() ??
+                    ''),
+            _row('Fecha', purchase['date']?.toString() ?? ''),
+            _row(
+                'Proveedor',
+                purchase['party']?.toString().trim().isNotEmpty == true
+                    ? purchase['party'].toString()
+                    : 'Proveedor'),
+            const SizedBox(height: 7),
+            _separator(),
+            const SizedBox(height: 8),
+            for (final item in items) ...[
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(item['name']?.toString() ?? 'Producto',
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w700, fontSize: 12)),
+                      Text(
+                        '${_number(item['quantity'])} × ${_amount(_number(item['unitPrice']))}',
+                        style: const TextStyle(
+                            color: Colors.black54, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(_amount(_number(item['total'])),
+                    style: const TextStyle(
+                        fontSize: 12, fontWeight: FontWeight.w700)),
+              ]),
+              const SizedBox(height: 7),
+            ],
+            _separator(),
+            const SizedBox(height: 7),
+            _row('Unidades recibidas',
+                _number(purchase['quantity']).toStringAsFixed(0)),
+            _row('Subtotal', _amount(subtotal)),
+            const SizedBox(height: 3),
+            _row('TOTAL COMPRA', _amount(total), strong: true),
+            const SizedBox(height: 7),
+            _separator(),
+            const SizedBox(height: 8),
+            _row(
+                'Forma de pago',
+                switch (purchase['paymentMethod']) {
+                  'pocket' => 'Poket',
+                  'card' => 'Tarjeta',
+                  'transfer' => 'Transferencia',
+                  'cash' => 'Efectivo',
+                  _ => purchase['paymentMethod']?.toString() ?? 'Efectivo',
+                }),
+            if (purchase['detail']?.toString().trim().isNotEmpty == true) ...[
+              const SizedBox(height: 7),
+              Text('Nota: ${purchase['detail']}',
+                  style: const TextStyle(fontSize: 11, color: Colors.black54)),
+            ],
+            const SizedBox(height: 13),
+            const Text('Mercadería recibida y registrada',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 11)),
+            const SizedBox(height: 3),
+            const Text('Gracias por tu trabajo',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 10, color: Colors.black54)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _centered(String value) => Padding(
+        padding: const EdgeInsets.only(top: 3),
+        child: Text(value,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 10, color: Colors.black54)),
+      );
+
+  Widget _separator() => const Text(
+        '------------------------------------------',
+        maxLines: 1,
+        overflow: TextOverflow.clip,
+        textAlign: TextAlign.center,
+        style: TextStyle(
+            fontSize: 9,
+            height: 1,
+            letterSpacing: .2,
+            color: Color(0xff8a929c)),
+      );
+
+  Widget _row(String label, String value, {bool strong = false}) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(children: [
+          Expanded(
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: strong ? 13 : 11,
+                    fontWeight: strong ? FontWeight.w900 : FontWeight.normal)),
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(value,
+                textAlign: TextAlign.right,
+                style: TextStyle(
+                    fontSize: strong ? 13 : 11,
+                    fontWeight: strong ? FontWeight.w900 : FontWeight.normal)),
+          ),
         ]),
       );
 }
