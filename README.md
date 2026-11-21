@@ -11,6 +11,6 @@ flutter pub get
 flutter build web --release --dart-define=BOT_API_URL=https://app.syncconnect.online --dart-define=PUBLIC_WEB_URL=https://app.syncconnect.online
 ```
 
-El resultado queda en `build/web`. Para alojarlo en Hostinger, publica el contenido de esa carpeta en el directorio público de tu subdominio. El backend debe responder desde `https://app.syncconnect.online`.
+El resultado queda en `build/web`. El directorio `dist/` incluido en este repositorio ya contiene una compilación lista para publicar. Para alojarlo en Hostinger, publica el contenido de `dist/` en el directorio público de tu subdominio. El backend debe responder desde `https://app.syncconnect.online`.
 
 No se incluyen claves privadas, `.env`, datos de usuarios ni el servidor backend. La configuración pública de Firebase que necesita la aplicación web sí forma parte del cliente.
